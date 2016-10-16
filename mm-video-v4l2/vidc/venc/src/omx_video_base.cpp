@@ -2339,7 +2339,7 @@ OMX_ERRORTYPE  omx_video::use_output_buffer(
             for (i=0; i < m_sOutPortDef.nBufferCountActual ; i++) {
                 bufHdr->nSize              = sizeof(OMX_BUFFERHEADERTYPE);
                 bufHdr->nVersion.nVersion  = OMX_SPEC_VERSION;
-                bufHdr->nAllocLen          = bytes;
+                bufHdr->nAllocLen          = m_sOutPortDef.nBufferSize;
                 bufHdr->nFilledLen         = 0;
                 bufHdr->pAppPrivate        = appData;
                 bufHdr->nOutputPortIndex   = PORT_INDEX_OUT;
@@ -2924,11 +2924,7 @@ OMX_ERRORTYPE  omx_video::allocate_output_buffer(
                 bufHdr->nSize              = sizeof(OMX_BUFFERHEADERTYPE);
                 bufHdr->nVersion.nVersion  = OMX_SPEC_VERSION;
                 // Set the values when we determine the right HxW param
-                if (!secure_session) {
-                    bufHdr->nAllocLen      = bytes;
-                } else {
-                    bufHdr->nAllocLen      = m_sOutPortDef.nBufferSize;
-                }
+                bufHdr->nAllocLen          = m_sOutPortDef.nBufferSize;
                 bufHdr->nFilledLen         = 0;
                 bufHdr->pAppPrivate        = appData;
                 bufHdr->nOutputPortIndex   = PORT_INDEX_OUT;
