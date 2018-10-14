@@ -47,14 +47,15 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stdio.h>
 #include <sys/mman.h>
 #ifdef _ANDROID_
-#include <binder/MemoryHeapBase.h>
 #ifdef _ANDROID_ICS_
 #include "QComOMXMetadata.h"
 #endif
 #endif // _ANDROID_
 #include <pthread.h>
 #include <semaphore.h>
+#ifndef _TARGET_KERNEL_VERSION_49_
 #include <linux/msm_vidc_enc.h>
+#endif
 #include <media/hardware/HardwareAPI.h>
 #include "OMX_Core.h"
 #include "OMX_QCOMExtns.h"
@@ -68,17 +69,11 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <dlfcn.h>
 #include "C2DColorConverter.h"
 #include "vidc_debug.h"
+#include <vector>
+#include "vidc_vendor_extensions.h"
 
 #ifdef _ANDROID_
 using namespace android;
-// local pmem heap object
-class VideoHeap : public MemoryHeapBase
-{
-    public:
-        VideoHeap(int fd, size_t size, void* base);
-        virtual ~VideoHeap() {}
-};
-
 #include <utils/Log.h>
 
 #endif // _ANDROID_
@@ -151,10 +146,80 @@ static const char* MEM_DEVICE = "/dev/pmem_smipool";
 #define LEGACY_CAM_METADATA_TYPE encoder_media_buffer_type
 #endif
 
+#ifdef _TARGET_KERNEL_VERSION_49_
+/** ENCODER STATUS CODES*/
+/* Base value for status codes */
+#define VEN_S_BASE    0x00000000
+#define VEN_S_SUCCESS    (VEN_S_BASE)/* Success */
+#define VEN_S_EFAIL    (VEN_S_BASE+1)/* General failure */
+
+/*Asynchronous messages from driver*/
+#define VEN_MSG_INDICATION    0
+#define VEN_MSG_INPUT_BUFFER_DONE    1
+#define VEN_MSG_OUTPUT_BUFFER_DONE    2
+#define VEN_MSG_NEED_OUTPUT_BUFFER    3
+#define VEN_MSG_FLUSH_INPUT_DONE    4
+#define VEN_MSG_FLUSH_OUTPUT_DONE    5
+#define VEN_MSG_START    6
+#define VEN_MSG_STOP    7
+#define VEN_MSG_PAUSE    8
+#define VEN_MSG_RESUME    9
+#define VEN_MSG_LTRUSE_FAILED    10
+#define VEN_MSG_HW_OVERLOAD    11
+#define VEN_MSG_MAX_CLIENTS    12
+
+/*Video codec profile types.*/
+#define VEN_PROFILE_MPEG4_SP      1/* 1 - MPEG4 SP profile      */
+#define VEN_PROFILE_MPEG4_ASP     2/* 2 - MPEG4 ASP profile     */
+#define VEN_PROFILE_H264_BASELINE 3/* 3 - H264 Baseline profile */
+#define VEN_PROFILE_H264_MAIN     4/* 4 - H264 Main profile     */
+#define VEN_PROFILE_H264_HIGH     5/* 5 - H264 High profile     */
+#define VEN_PROFILE_H263_BASELINE 6/* 6 - H263 Baseline profile */
+
+/*Different methods of Multi slice selection.*/
+#define VEN_MSLICE_OFF    1
+#define VEN_MSLICE_CNT_MB    2 /*number of MBscount per slice*/
+#define VEN_MSLICE_CNT_BYTE    3 /*number of bytes count per slice.*/
+#define VEN_MSLICE_GOB    4 /*Multi slice by GOB for H.263 only.*/
+
+/*Video codec profile level types.*/
+#define VEN_LEVEL_MPEG4_0    0x1/* MPEG4 Level 0  */
+#define VEN_LEVEL_MPEG4_1    0x2/* MPEG4 Level 1  */
+#define VEN_LEVEL_MPEG4_2    0x3/* MPEG4 Level 2  */
+#define VEN_LEVEL_MPEG4_3    0x4/* MPEG4 Level 3  */
+#define VEN_LEVEL_MPEG4_4    0x5/* MPEG4 Level 4  */
+#define VEN_LEVEL_MPEG4_5    0x6/* MPEG4 Level 5  */
+#define VEN_LEVEL_MPEG4_3b    0x7/* MPEG4 Level 3b */
+#define VEN_LEVEL_MPEG4_6    0x8/* MPEG4 Level 6  */
+
+#define VEN_LEVEL_H264_1    0x9/* H.264 Level 1   */
+#define VEN_LEVEL_H264_1b    0xA/* H.264 Level 1b  */
+#define VEN_LEVEL_H264_1p1    0xB/* H.264 Level 1.1 */
+#define VEN_LEVEL_H264_1p2    0xC/* H.264 Level 1.2 */
+#define VEN_LEVEL_H264_1p3    0xD/* H.264 Level 1.3 */
+#define VEN_LEVEL_H264_2    0xE/* H.264 Level 2   */
+#define VEN_LEVEL_H264_2p1    0xF/* H.264 Level 2.1 */
+#define VEN_LEVEL_H264_2p2    0x10/* H.264 Level 2.2 */
+#define VEN_LEVEL_H264_3    0x11/* H.264 Level 3   */
+#define VEN_LEVEL_H264_3p1    0x12/* H.264 Level 3.1 */
+#define VEN_LEVEL_H264_3p2    0x13/* H.264 Level 3.2 */
+#define VEN_LEVEL_H264_4    0x14/* H.264 Level 4   */
+
+#define VEN_LEVEL_H263_10    0x15/* H.263 Level 10  */
+#define VEN_LEVEL_H263_20    0x16/* H.263 Level 20  */
+#define VEN_LEVEL_H263_30    0x17/* H.263 Level 30  */
+#define VEN_LEVEL_H263_40    0x18/* H.263 Level 40  */
+#define VEN_LEVEL_H263_45    0x19/* H.263 Level 45  */
+#define VEN_LEVEL_H263_50    0x1A/* H.263 Level 50  */
+#define VEN_LEVEL_H263_60    0x1B/* H.263 Level 60  */
+#define VEN_LEVEL_H263_70    0x1C/* H.263 Level 70  */
+#endif //_TARGET_KERNEL_VERSION_49_
+
 void* message_thread_enc(void *);
 
 enum omx_venc_extradata_types {
     VENC_EXTRADATA_SLICEINFO = 0x100,
+    VENC_EXTRADATA_LTRINFO = 0x200,
     VENC_EXTRADATA_MBINFO = 0x400,
     VENC_EXTRADATA_FRAMEDIMENSION = 0x1000000,
     VENC_EXTRADATA_YUV_STATS = 0x800,
@@ -166,6 +231,60 @@ struct output_metabuffer {
     OMX_U32 type;
     native_handle_t *nh;
 };
+
+#ifdef _TARGET_KERNEL_VERSION_49_
+struct venc_buffer{
+    unsigned char *ptrbuffer;
+    unsigned long    sz;
+    unsigned long    len;
+    unsigned long    offset;
+    long long    timestamp;
+    unsigned long    flags;
+    void    *clientdata;
+};
+
+struct venc_bufferpayload{
+    unsigned char *pbuffer;
+    size_t    sz;
+    int    fd;
+    unsigned int    offset;
+    unsigned int    maped_size;
+    unsigned long    filled_len;
+};
+
+struct venc_voptimingcfg{
+    unsigned long    voptime_resolution;
+};
+
+struct venc_framerate{
+    unsigned long    fps_denominator;
+    unsigned long    fps_numerator;
+};
+
+struct venc_headerextension{
+    unsigned long    header_extension;
+};
+
+struct venc_multiclicecfg{
+    unsigned long    mslice_mode;
+    unsigned long    mslice_size;
+};
+
+struct venc_msg{
+    unsigned long    statuscode;
+    unsigned long    msgcode;
+    struct venc_buffer    buf;
+    unsigned long    msgdata_size;
+};
+
+struct venc_profile {
+    unsigned long    profile;
+};
+
+struct ven_profilelevel {
+    unsigned long    level;
+};
+#endif //_TARGET_KERNEL_VERSION_49_
 
 typedef struct encoder_meta_buffer_payload_type {
     char data[sizeof(LEGACY_CAM_METADATA_TYPE) + sizeof(int)];
@@ -244,11 +363,13 @@ class omx_video: public qc_omx_component
         virtual OMX_U32 dev_resume(void) = 0;
         virtual OMX_U32 dev_start_done(void) = 0;
         virtual OMX_U32 dev_set_message_thread_id(pthread_t) = 0;
+        virtual bool dev_handle_empty_eos_buffer(void) = 0;
         virtual bool dev_use_buf(void *,unsigned,unsigned) = 0;
         virtual bool dev_free_buf(void *,unsigned) = 0;
         virtual bool dev_empty_buf(void *, void *,unsigned,unsigned) = 0;
         virtual bool dev_fill_buf(void *buffer, void *,unsigned,unsigned) = 0;
         virtual bool dev_get_buf_req(OMX_U32 *,OMX_U32 *,OMX_U32 *,OMX_U32) = 0;
+        virtual bool dev_get_dimensions(OMX_U32 ,OMX_U32 *,OMX_U32 *) = 0;
         virtual bool dev_get_seq_hdr(void *, unsigned, unsigned *) = 0;
         virtual bool dev_loaded_start(void) = 0;
         virtual bool dev_loaded_stop(void) = 0;
@@ -274,7 +395,7 @@ class omx_video: public qc_omx_component
         virtual bool dev_color_align(OMX_BUFFERHEADERTYPE *buffer, OMX_U32 width,
                         OMX_U32 height) = 0;
         virtual bool dev_get_output_log_flag() = 0;
-        virtual int dev_output_log_buffers(const char *buffer_addr, int buffer_len) = 0;
+        virtual int dev_output_log_buffers(const char *buffer_addr, int buffer_len, uint64_t timestamp) = 0;
         virtual int dev_extradata_log_buffers(char *buffer_addr) = 0;
         OMX_ERRORTYPE component_role_enum(
                 OMX_HANDLETYPE hComp,
@@ -585,6 +706,15 @@ class omx_video: public qc_omx_component
         bool is_conv_needed(int, int);
         void print_debug_color_aspects(ColorAspects *aspects, const char *prefix);
 
+        OMX_ERRORTYPE get_vendor_extension_config(
+                OMX_CONFIG_ANDROID_VENDOR_EXTENSIONTYPE *ext);
+        OMX_ERRORTYPE set_vendor_extension_config(
+                OMX_CONFIG_ANDROID_VENDOR_EXTENSIONTYPE *ext);
+        void init_vendor_extensions(VendorExtensionStore&);
+        // Extensions-store is immutable after initialization (i.e cannot add/remove/change
+        //  extensions once added !)
+        const VendorExtensionStore mVendorExtensionStore;
+
 #ifdef USE_ION
         int alloc_map_ion_memory(int size,
                                  struct ion_allocation_data *alloc_data,
@@ -640,6 +770,7 @@ class omx_video: public qc_omx_component
         OMX_VIDEO_PARAM_AVCSLICEFMO m_sAVCSliceFMO;
         QOMX_VIDEO_INTRAPERIODTYPE m_sIntraperiod;
         OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE m_sErrorCorrection;
+        QOMX_VIDEO_PARAM_SLICE_SPACING_TYPE m_sSliceSpacing;
         OMX_VIDEO_PARAM_INTRAREFRESHTYPE m_sIntraRefresh;
         QOMX_VIDEO_PARAM_LTRMODE_TYPE m_sParamLTRMode;
         QOMX_VIDEO_PARAM_LTRCOUNT_TYPE m_sParamLTRCount;
@@ -659,11 +790,10 @@ class omx_video: public qc_omx_component
         QOMX_VIDEO_H264ENTROPYCODINGTYPE m_sParamEntropy;
         PrependSPSPPSToIDRFramesParams m_sPrependSPSPPS;
         struct timestamp_info {
-            OMX_U64 m_TimeStamp;
-            bool is_buffer_pending;
-            OMX_BUFFERHEADERTYPE *pending_buffer;
+            OMX_S64 ts;
+            omx_cmd_queue deferred_inbufq;
             pthread_mutex_t m_lock;
-        } timestamp;
+        } m_TimeStampInfo;
         OMX_U32 m_sExtraData;
         OMX_U32 m_input_msg_id;
         QOMX_EXTNINDEX_VIDEO_VENC_LOW_LATENCY_MODE m_slowLatencyMode;
@@ -674,6 +804,9 @@ class omx_video: public qc_omx_component
         DescribeColorAspectsParams m_sConfigColorAspects;
         OMX_VIDEO_PARAM_ANDROID_TEMPORALLAYERINGTYPE m_sParamTemporalLayers;
         OMX_VIDEO_CONFIG_ANDROID_TEMPORALLAYERINGTYPE m_sConfigTemporalLayers;
+        QOMX_ENABLETYPE m_sParamAVTimerTimestampMode;   // use VT-timestamps in gralloc-handle
+        QOMX_ENABLETYPE m_sParamControlInputQueue;
+        OMX_TIME_CONFIG_TIMESTAMPTYPE m_sConfigInputTrigTS;
 
         // fill this buffer queue
         omx_cmd_queue m_ftb_q;
@@ -687,6 +820,7 @@ class omx_video: public qc_omx_component
         omx_cmd_queue m_opq_meta_q;
         omx_cmd_queue m_opq_pmem_q;
         OMX_BUFFERHEADERTYPE meta_buffer_hdr[MAX_NUM_INPUT_BUFFERS];
+        pthread_mutex_t m_buf_lock;
 
         bool input_flush_progress;
         bool output_flush_progress;
@@ -698,15 +832,12 @@ class omx_video: public qc_omx_component
         bool allocate_native_handle;
 
         uint64_t m_out_bm_count;
+        uint64_t m_client_out_bm_count;
         uint64_t m_inp_bm_count;
         uint64_t m_flags;
         uint64_t m_etb_count;
         uint64_t m_fbd_count;
         OMX_TICKS m_etb_timestamp;
-#ifdef _ANDROID_
-        // Heap pointer to frame buffers
-        sp<MemoryHeapBase>    m_heap_ptr;
-#endif //_ANDROID_
         // to know whether Event Port Settings change has been triggered or not.
         bool m_event_port_settings_sent;
         OMX_U8                m_cRole[OMX_MAX_STRINGNAME_SIZE];

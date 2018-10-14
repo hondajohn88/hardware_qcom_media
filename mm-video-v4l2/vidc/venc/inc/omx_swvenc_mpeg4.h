@@ -79,6 +79,7 @@ class omx_venc: public omx_video
         int dev_handle_output_extradata(void *, int);
         int dev_handle_input_extradata(void *, int, int);
         bool dev_buffer_ready_to_queue(OMX_BUFFERHEADERTYPE *buffer);
+        bool dev_get_dimensions(OMX_U32 ,OMX_U32 *,OMX_U32 *);
         void dev_set_extradata_cookie(void *);
         int dev_set_format(int);
 
@@ -116,6 +117,7 @@ class omx_venc: public omx_video
         OMX_U32 dev_resume(void);
         OMX_U32 dev_start_done(void);
         OMX_U32 dev_set_message_thread_id(pthread_t);
+        bool dev_handle_empty_eos_buffer(void);
         bool dev_use_buf( void *,unsigned,unsigned);
         bool dev_free_buf( void *,unsigned);
         bool dev_empty_buf(void *, void *,unsigned,unsigned);
@@ -144,7 +146,7 @@ class omx_venc: public omx_video
         bool dev_color_align(OMX_BUFFERHEADERTYPE *buffer, OMX_U32 width,
                         OMX_U32 height);
         bool dev_get_output_log_flag();
-        int dev_output_log_buffers(const char *buffer_addr, int buffer_len);
+        int dev_output_log_buffers(const char *buffer_addr, int buffer_len, uint64_t timestamp);
         int dev_extradata_log_buffers(char *buffer);
         bool swvenc_color_align(OMX_BUFFERHEADERTYPE *buffer, OMX_U32 width,
                                 OMX_U32 height);

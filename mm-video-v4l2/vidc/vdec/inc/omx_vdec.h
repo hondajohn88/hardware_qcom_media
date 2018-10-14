@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------------
-Copyright (c) 2010 - 2017, The Linux Foundation. All rights reserved.
+Copyright (c) 2010 - 2018, The Linux Foundation. All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions
@@ -50,10 +50,14 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cutils/atomic.h>
 #include <qdMetaData.h>
 #include <color_metadata.h>
+#define STRINGIFY_ENUMS
+#include <media/msm_media_info.h>
+#include <unordered_map>
 
 static ptrdiff_t x;
 
 #ifdef _ANDROID_
+#undef LOG_TAG
 #ifdef MAX_RES_720P
 #define LOG_TAG "OMX-VDEC-720P"
 #elif MAX_RES_1080P
@@ -67,8 +71,7 @@ static ptrdiff_t x;
 //#include <binder/MemoryHeapIon.h>
 //#else
 #endif
-#include <binder/MemoryHeapBase.h>
-#include <ui/ANativeObjectBase.h>
+#include <nativebase/nativebase.h>
 extern "C" {
 #include <utils/Log.h>
 }
@@ -79,8 +82,52 @@ extern "C" {
 #endif // _ANDROID_
 
 #if defined (_ANDROID_HONEYCOMB_) || defined (_ANDROID_ICS_)
+#define STRINGIFY_ENUMS
 #include <media/hardware/HardwareAPI.h>
 #endif
+
+#ifdef _TARGET_KERNEL_VERSION_49_
+/* DECODER STATUS CODES */
+/* Base value for status codes */
+#define VDEC_S_BASE    0x40000000
+/* Success */
+#define VDEC_S_SUCCESS    (VDEC_S_BASE)
+/* General failure */
+#define VDEC_S_EFAIL    (VDEC_S_BASE + 1)
+/* Fatal irrecoverable  failure. Need to  tear down session. */
+#define VDEC_S_EFATAL    (VDEC_S_BASE + 2)
+/* Error with input bistream */
+#define VDEC_S_INPUT_BITSTREAM_ERR    (VDEC_S_BASE + 3)
+
+#define VDEC_MSG_BASE    0x0000000
+/* Codes to identify asynchronous message responses and events that driver
+  wants to communicate to the app.*/
+#define VDEC_MSG_RESP_INPUT_BUFFER_DONE    (VDEC_MSG_BASE + 1)
+#define VDEC_MSG_RESP_OUTPUT_BUFFER_DONE    (VDEC_MSG_BASE + 2)
+#define VDEC_MSG_RESP_INPUT_FLUSHED    (VDEC_MSG_BASE + 3)
+#define VDEC_MSG_RESP_OUTPUT_FLUSHED    (VDEC_MSG_BASE + 4)
+#define VDEC_MSG_RESP_FLUSH_INPUT_DONE    (VDEC_MSG_BASE + 5)
+#define VDEC_MSG_RESP_FLUSH_OUTPUT_DONE    (VDEC_MSG_BASE + 6)
+#define VDEC_MSG_RESP_START_DONE    (VDEC_MSG_BASE + 7)
+#define VDEC_MSG_RESP_STOP_DONE    (VDEC_MSG_BASE + 8)
+#define VDEC_MSG_RESP_PAUSE_DONE    (VDEC_MSG_BASE + 9)
+#define VDEC_MSG_RESP_RESUME_DONE    (VDEC_MSG_BASE + 10)
+#define VDEC_MSG_EVT_CONFIG_CHANGED    (VDEC_MSG_BASE + 11)
+#define VDEC_MSG_EVT_HW_ERROR    (VDEC_MSG_BASE + 12)
+#define VDEC_MSG_EVT_INFO_FIELD_DROPPED    (VDEC_MSG_BASE + 13)
+#define VDEC_MSG_EVT_HW_OVERLOAD    (VDEC_MSG_BASE + 14)
+#define VDEC_MSG_EVT_MAX_CLIENTS    (VDEC_MSG_BASE + 15)
+#define VDEC_MSG_EVT_HW_UNSUPPORTED    (VDEC_MSG_BASE + 16)
+
+/*Buffer flags bits masks.*/
+#define VDEC_BUFFERFLAG_EOS    0x00000001
+#define VDEC_BUFFERFLAG_DECODEONLY    0x00000004
+#define VDEC_BUFFERFLAG_DATACORRUPT    0x00000008
+#define VDEC_BUFFERFLAG_ENDOFFRAME    0x00000010
+#define VDEC_BUFFERFLAG_SYNCFRAME    0x00000020
+#define VDEC_BUFFERFLAG_EXTRADATA    0x00000040
+#define VDEC_BUFFERFLAG_CODECCONFIG    0x00000080
+#endif // _TARGET_KERNEL_VERSION_49_
 
 #include <unistd.h>
 
@@ -98,16 +145,17 @@ extern "C" {
 #include "OMX_VideoExt.h"
 #include "OMX_IndexExt.h"
 #include "qc_omx_component.h"
+#ifndef _TARGET_KERNEL_VERSION_49_
 #include <linux/msm_vidc_dec.h>
+#endif
+#include "mp4_utils.h"
 #include <media/msm_vidc.h>
 #include "frameparser.h"
-#ifdef MAX_RES_1080P
-#include "mp4_utils.h"
-#endif
 #include "extra_data_handler.h"
 #include "ts_parser.h"
 #include "vidc_color_converter.h"
 #include "vidc_debug.h"
+#include "vidc_vendor_extensions.h"
 #ifdef _ANDROID_
 #include <cutils/properties.h>
 #else
@@ -117,32 +165,14 @@ extern "C" {
     OMX_API void * get_omx_component_factory_fn(void);
 }
 
-#ifdef _ANDROID_
-using namespace android;
-#ifdef USE_ION
-class VideoHeap : public MemoryHeapBase
-{
-    public:
-        VideoHeap(int devicefd, size_t size, void* base,ion_user_handle_t handle,int mapfd);
-        virtual ~VideoHeap() {}
-    private:
-        int m_ion_device_fd;
-        ion_user_handle_t m_ion_handle;
-};
-#else
-// local pmem heap object
-class VideoHeap : public MemoryHeapBase
-{
-    public:
-        VideoHeap(int fd, size_t size, void* base);
-        virtual ~VideoHeap() {}
-};
-#endif
-#endif // _ANDROID_
 //////////////////////////////////////////////////////////////////////////////
 //                       Module specific globals
 //////////////////////////////////////////////////////////////////////////////
 #define OMX_SPEC_VERSION  0x00000101
+#define OMX_INIT_STRUCT(_s_, _name_)         \
+    memset((_s_), 0x0, sizeof(_name_));      \
+(_s_)->nSize = sizeof(_name_);               \
+(_s_)->nVersion.nVersion = OMX_SPEC_VERSION  \
 
 
 //////////////////////////////////////////////////////////////////////////////
@@ -187,6 +217,8 @@ class VideoHeap : public MemoryHeapBase
 #ifdef _ANDROID_
 #define MAX_NUM_INPUT_OUTPUT_BUFFERS 64
 #endif
+
+#define MIN_NUM_INPUT_OUTPUT_EXTRADATA_BUFFERS 32 // 32 (max cap when VPP enabled)
 
 #define OMX_FRAMEINFO_EXTRADATA 0x00010000
 #define OMX_INTERLACE_EXTRADATA 0x00020000
@@ -237,7 +269,9 @@ class VideoHeap : public MemoryHeapBase
 
 enum port_indexes {
     OMX_CORE_INPUT_PORT_INDEX        =0,
-    OMX_CORE_OUTPUT_PORT_INDEX       =1
+    OMX_CORE_OUTPUT_PORT_INDEX       =1,
+    OMX_CORE_INPUT_EXTRADATA_INDEX   =2,
+    OMX_CORE_OUTPUT_EXTRADATA_INDEX  =3
 };
 enum vidc_perf_level {
     VIDC_SVS = 0,
@@ -251,6 +285,179 @@ enum turbo_mode {
     TURBO_MODE_HIGH_FPS = 0x2,
     TURBO_MODE_MAX = 0xFF
 };
+
+#ifdef _TARGET_KERNEL_VERSION_49_
+enum vdec_output_format {
+    VDEC_YUV_FORMAT_NV12 = 0x1,
+    VDEC_YUV_FORMAT_TILE_4x2 = 0x2,
+    VDEC_YUV_FORMAT_NV12_UBWC = 0x3,
+    VDEC_YUV_FORMAT_NV12_TP10_UBWC = 0x4,
+    VDEC_YUV_FORMAT_P010_VENUS = 0x5,
+};
+
+enum vdec_picture {
+    PICTURE_TYPE_I,
+    PICTURE_TYPE_P,
+    PICTURE_TYPE_B,
+    PICTURE_TYPE_BI,
+    PICTURE_TYPE_SKIP,
+    PICTURE_TYPE_IDR,
+    PICTURE_TYPE_UNKNOWN
+};
+
+enum vdec_codec {
+    VDEC_CODECTYPE_H264 = 0x1,
+    VDEC_CODECTYPE_H263 = 0x2,
+    VDEC_CODECTYPE_MPEG4 = 0x3,
+    VDEC_CODECTYPE_DIVX_3 = 0x4,
+    VDEC_CODECTYPE_DIVX_4 = 0x5,
+    VDEC_CODECTYPE_DIVX_5 = 0x6,
+    VDEC_CODECTYPE_DIVX_6 = 0x7,
+    VDEC_CODECTYPE_XVID = 0x8,
+    VDEC_CODECTYPE_MPEG1 = 0x9,
+    VDEC_CODECTYPE_MPEG2 = 0xa,
+    VDEC_CODECTYPE_VC1 = 0xb,
+    VDEC_CODECTYPE_VC1_RCV = 0xc,
+    VDEC_CODECTYPE_HEVC = 0xd,
+    VDEC_CODECTYPE_MVC = 0xe,
+    VDEC_CODECTYPE_VP8 = 0xf,
+    VDEC_CODECTYPE_VP9 = 0x10,
+};
+
+enum vdec_interlaced_format {
+    VDEC_InterlaceFrameProgressive = 0x1,
+    VDEC_InterlaceInterleaveFrameTopFieldFirst = 0x2,
+    VDEC_InterlaceInterleaveFrameBottomFieldFirst = 0x4
+};
+
+enum vdec_output_order {
+    VDEC_ORDER_DISPLAY = 0x1,
+    VDEC_ORDER_DECODE = 0x2
+};
+
+enum vdec_buffer {
+    VDEC_BUFFER_TYPE_INPUT,
+    VDEC_BUFFER_TYPE_OUTPUT
+};
+
+struct vdec_aspectratioinfo {
+    uint32_t aspect_ratio;
+    uint32_t par_width;
+    uint32_t par_height;
+};
+
+struct vdec_sep_metadatainfo {
+    void *metabufaddr;
+    uint32_t size;
+    int fd;
+    int offset;
+    uint32_t buffer_size;
+};
+
+struct vdec_picsize {
+    uint32_t frame_width;
+    uint32_t frame_height;
+    uint32_t stride;
+    uint32_t scan_lines;
+};
+
+struct vdec_framesize {
+    uint32_t   left;
+    uint32_t   top;
+    uint32_t   right;
+    uint32_t   bottom;
+};
+
+struct vdec_bufferpayload {
+    void *bufferaddr;
+    size_t buffer_len;
+    int pmem_fd;
+    size_t offset;
+    size_t mmaped_size;
+};
+
+struct vdec_misrinfo {
+    uint32_t misr_dpb_luma;
+    uint32_t misr_dpb_chroma;
+    uint32_t misr_opb_luma;
+    uint32_t misr_opb_chroma;
+};
+
+struct vdec_output_frameinfo {
+    void *bufferaddr;
+    size_t offset;
+    size_t len;
+    uint32_t flags;
+    int64_t time_stamp;
+    enum vdec_picture pic_type;
+    void *client_data;
+    void *input_frame_clientdata;
+    struct vdec_picsize picsize;
+    struct vdec_framesize framesize;
+    enum vdec_interlaced_format interlaced_format;
+    struct vdec_aspectratioinfo aspect_ratio_info;
+    struct vdec_sep_metadatainfo metadata_info;
+    struct vdec_misrinfo misrinfo[2];
+};
+
+union vdec_msgdata {
+    struct vdec_output_frameinfo output_frame;
+    void *input_frame_clientdata;
+};
+
+struct vdec_msginfo {
+    uint32_t status_code;
+    uint32_t msgcode;
+    union vdec_msgdata msgdata;
+    size_t msgdatasize;
+};
+
+struct vdec_allocatorproperty {
+    enum vdec_buffer buffer_type;
+    uint32_t mincount;
+    uint32_t maxcount;
+    uint32_t actualcount;
+    size_t buffer_size;
+    uint32_t alignment;
+    uint32_t buf_poolid;
+    size_t meta_buffer_size;
+};
+
+struct vdec_framerate {
+    unsigned long fps_denominator;
+    unsigned long fps_numerator;
+};
+
+struct vdec_setbuffer_cmd {
+    enum vdec_buffer buffer_type;
+    struct vdec_bufferpayload buffer;
+};
+
+struct vdec_input_frameinfo {
+    void *bufferaddr;
+    size_t offset;
+    size_t datalen;
+    uint32_t flags;
+    int64_t timestamp;
+    void *client_data;
+    int pmem_fd;
+    size_t pmem_offset;
+    void *desc_addr;
+    uint32_t desc_size;
+};
+
+struct vdec_seqheader {
+    void *ptr_seqheader;
+    size_t seq_header_len;
+    int pmem_fd;
+    size_t pmem_offset;
+};
+
+struct vdec_fillbuffer_cmd {
+    struct vdec_bufferpayload buffer;
+    void *client_data;
+};
+#endif //_TARGET_KERNEL_VERSION_49_
 
 #ifdef USE_ION
 struct vdec_ion {
@@ -282,7 +489,11 @@ struct extradata_buffer_info {
 struct video_driver_context {
     int video_driver_fd;
     enum vdec_codec decoder_format;
+#ifndef _TARGET_KERNEL_VERSION_49_
     enum vdec_output_fromat output_format;
+#else
+   enum vdec_output_format output_format;
+#endif
     enum vdec_interlaced_format interlace;
     enum vdec_output_order picture_order;
     struct vdec_framesize frame_size;
@@ -349,6 +560,19 @@ struct extradata_info {
     OMX_U32 output_width;
     OMX_U32 output_height;
 };
+
+struct prefetch_info {
+    size_t pf_size;
+    OMX_U32 pf_skip_count;
+    OMX_U32 size_limit;
+    OMX_U32 res_limit;
+    bool no_more_pf;
+};
+
+typedef std::unordered_map <enum ColorAspects::Primaries, ColorPrimaries> PrimariesMap;
+typedef std::unordered_map <enum ColorAspects::Transfer, GammaTransfer> TransferMap;
+typedef std::unordered_map <enum ColorAspects::MatrixCoeffs, MatrixCoEfficients> MatrixCoeffMap;
+typedef std::unordered_map <enum ColorAspects::Range, ColorRange> RangeMap;
 
 // OMX video decoder class
 class omx_vdec: public qc_omx_component
@@ -495,6 +719,7 @@ class omx_vdec: public qc_omx_component
         OMX_ERRORTYPE decide_dpb_buffer_mode(bool split_opb_dpb_with_same_color_fmt);
         void request_perf_level(enum vidc_perf_level perf_level);
         int dpb_bit_depth;
+        struct prefetch_info m_pf_info;
         bool async_thread_force_stop;
         volatile bool message_thread_stop;
         struct extradata_info m_extradata_info;
@@ -640,6 +865,7 @@ class omx_vdec: public qc_omx_component
         bool allocate_done(void);
         bool allocate_input_done(void);
         bool allocate_output_done(void);
+        bool allocate_output_extradata_done(void);
 
         OMX_ERRORTYPE free_input_buffer(OMX_BUFFERHEADERTYPE *bufferHdr);
         OMX_ERRORTYPE free_input_buffer(unsigned int bufferindex,
@@ -647,6 +873,7 @@ class omx_vdec: public qc_omx_component
         OMX_ERRORTYPE free_output_buffer(OMX_BUFFERHEADERTYPE *bufferHdr);
         void free_output_buffer_header();
         void free_input_buffer_header();
+        void free_output_extradata_buffer_header();
 
         OMX_ERRORTYPE allocate_input_heap_buffer(OMX_HANDLETYPE       hComp,
                 OMX_BUFFERHEADERTYPE **bufferHdr,
@@ -671,13 +898,21 @@ class omx_vdec: public qc_omx_component
                 OMX_PTR                appData,
                 OMX_U32                bytes,
                 OMX_U8                 *buffer);
+        OMX_ERRORTYPE use_client_output_extradata_buffer(OMX_HANDLETYPE hComp,
+                OMX_BUFFERHEADERTYPE   **bufferHdr,
+                OMX_U32                port,
+                OMX_PTR                appData,
+                OMX_U32                bytes,
+                OMX_U8                 *buffer);
         OMX_ERRORTYPE get_supported_profile_level(OMX_VIDEO_PARAM_PROFILELEVELTYPE *profileLevelType);
 
         OMX_ERRORTYPE allocate_desc_buffer(OMX_U32 index);
         OMX_ERRORTYPE allocate_output_headers();
+        OMX_ERRORTYPE allocate_client_output_extradata_headers();
         bool execute_omx_flush(OMX_U32);
         bool execute_output_flush();
         bool execute_input_flush();
+        void notify_flush_done(void *ctxt);
         OMX_ERRORTYPE empty_buffer_done(OMX_HANDLETYPE hComp,
                 OMX_BUFFERHEADERTYPE * buffer);
 
@@ -702,6 +937,7 @@ class omx_vdec: public qc_omx_component
 
         bool release_output_done();
         bool release_input_done();
+        bool release_output_extradata_done();
         OMX_ERRORTYPE get_buffer_req(vdec_allocatorproperty *buffer_prop);
         OMX_ERRORTYPE set_buffer_req(vdec_allocatorproperty *buffer_prop);
         OMX_ERRORTYPE start_port_reconfig();
@@ -712,18 +948,15 @@ class omx_vdec: public qc_omx_component
         void handle_extradata_secure(OMX_BUFFERHEADERTYPE *p_buf_hdr);
         void handle_extradata(OMX_BUFFERHEADERTYPE *p_buf_hdr);
         void convert_color_space_info(OMX_U32 primaries, OMX_U32 range,
-            OMX_U32 transfer, OMX_U32 matrix, ColorSpace_t *color_space,
+            OMX_U32 transfer, OMX_U32 matrix,
             ColorAspects *aspects);
-        bool handle_color_space_info(void *data,
-                                     ColorSpace_t *color_space,
-                                     ColorMetaData* color_mdata,
-                                     bool& set_color_aspects_only);
+        bool handle_color_space_info(void *data);
         void set_colorspace_in_handle(ColorSpace_t color, unsigned int buf_index);
         void print_debug_color_aspects(ColorAspects *aspects, const char *prefix);
         void print_debug_hdr_color_info(HDRStaticInfo *hdr_info, const char *prefix);
         void print_debug_hdr_color_info_mdata(ColorMetaData* color_mdata);
-        bool handle_content_light_level_info(void* data, ContentLightLevel* light_level_mdata);
-        bool handle_mastering_display_color_info(void* data, MasteringDisplay* mastering_display_mdata);
+        bool handle_content_light_level_info(void* data);
+        bool handle_mastering_display_color_info(void* data);
         void print_debug_extradata(OMX_OTHER_EXTRADATATYPE *extra);
         void set_colormetadata_in_handle(ColorMetaData *color_mdata, unsigned int buf_index);
         void prepare_color_aspects_metadata(OMX_U32 primaries, OMX_U32 range,
@@ -881,6 +1114,8 @@ class omx_vdec: public qc_omx_component
         OMX_BUFFERHEADERTYPE  *m_inp_mem_ptr;
         // Output memory pointer
         OMX_BUFFERHEADERTYPE  *m_out_mem_ptr;
+        // Client extradata memory pointer
+        OMX_BUFFERHEADERTYPE  *m_client_output_extradata_mem_ptr;
         // number of input bitstream error frame count
         unsigned int m_inp_err_count;
 #ifdef _ANDROID_
@@ -903,6 +1138,8 @@ class omx_vdec: public qc_omx_component
         uint64_t m_out_bm_count;
         // bitmask array size for input side
         uint64_t m_inp_bm_count;
+        // bitmask array size for extradata
+        uint64_t m_out_extradata_bm_count;
         //Input port Populated
         OMX_BOOL m_inp_bPopulated;
         //Output port Populated
@@ -910,14 +1147,6 @@ class omx_vdec: public qc_omx_component
         // encapsulate the waiting states.
         uint64_t m_flags;
 
-#ifdef _ANDROID_
-        // Heap pointer to frame buffers
-        struct vidc_heap {
-            sp<MemoryHeapBase>    video_heap_ptr;
-        };
-        struct vidc_heap *m_heap_ptr;
-        unsigned int m_heap_count;
-#endif //_ANDROID_
         // store I/P PORT state
         OMX_BOOL m_inp_bEnabled;
         // store O/P PORT state
@@ -1051,6 +1280,7 @@ class omx_vdec: public qc_omx_component
         OMX_U32 m_reconfig_width;
         OMX_U32 m_reconfig_height;
         bool m_smoothstreaming_mode;
+        bool m_decode_order_mode;
 
         bool m_input_pass_buffer_fd;
         DescribeColorAspectsParams m_client_color_space;
@@ -1059,9 +1289,6 @@ class omx_vdec: public qc_omx_component
         // HDRStaticInfo defined in HardwareAPI.h
         DescribeHDRStaticInfoParams m_client_hdr_info;
         DescribeHDRStaticInfoParams m_internal_hdr_info;
-        bool m_change_client_hdr_info;
-        pthread_mutex_t m_hdr_info_client_lock;
-        ColorMetaData m_color_mdata;
 
         OMX_U32 operating_frame_rate;
         uint8_t m_need_turbo;
@@ -1083,6 +1310,7 @@ class omx_vdec: public qc_omx_component
         unsigned int m_fill_output_msg;
         bool client_set_fps;
         unsigned int stereo_output_mode;
+        bool m_hypervisor;
         class allocate_color_convert_buf
         {
             public:
@@ -1119,6 +1347,8 @@ class omx_vdec: public qc_omx_component
                 unsigned int buffer_alignment_req;
                 OMX_U32 m_c2d_width;
                 OMX_U32 m_c2d_height;
+                OMX_U32 m_c2d_output_format;
+                bool m_c2d_init_success;
                 OMX_QCOM_PLATFORM_PRIVATE_LIST      m_platform_list_client[MAX_COUNT];
                 OMX_QCOM_PLATFORM_PRIVATE_ENTRY     m_platform_entry_client[MAX_COUNT];
                 OMX_QCOM_PLATFORM_PRIVATE_PMEM_INFO m_pmem_info_client[MAX_COUNT];
@@ -1128,11 +1358,6 @@ class omx_vdec: public qc_omx_component
 #endif
                 unsigned char *pmem_baseaddress[MAX_COUNT];
                 int pmem_fd[MAX_COUNT];
-                struct vidc_heap {
-                    sp<MemoryHeapBase>    video_heap_ptr;
-                };
-                struct vidc_heap m_heap_ptr[MAX_COUNT];
-
                 OMX_ERRORTYPE cache_ops(unsigned int index, unsigned int cmd);
                 inline OMX_ERRORTYPE cache_clean_buffer(unsigned int index) {
                     return cache_ops(index, ION_IOC_CLEAN_CACHES);
@@ -1146,7 +1371,7 @@ class omx_vdec: public qc_omx_component
 #endif
         struct video_decoder_capability m_decoder_capability;
         struct debug_cap m_debug;
-        int log_input_buffers(const char *, int);
+        int log_input_buffers(const char *, int, uint64_t);
         int log_output_buffers(OMX_BUFFERHEADERTYPE *);
 #ifdef _MSM8974_
         void send_codec_config();
@@ -1249,61 +1474,67 @@ class omx_vdec: public qc_omx_component
         }
 
         static OMX_ERRORTYPE describeColorFormat(OMX_PTR params);
-        void prefetchNewBuffers();
+        void prefetchNewBuffers(bool in_reconfig);
+        void drainPrefetchedBuffers();
 
         class client_extradata_info {
             private:
-                int fd;
-                OMX_U32 total_size;
-                OMX_U32 size;
-                void *vaddr;
+                OMX_U32 size; // size of extradata of each frame
+                OMX_U32 buffer_count;
+                OMX_BOOL enable;
+
             public:
                 client_extradata_info() {
-                    fd = -1;
-                    size = 0;
-                    total_size = 0;
-                    vaddr = NULL;
-                }
-
-                void reset() {
-                    if (vaddr) {
-                        munmap(vaddr, total_size);
-                        vaddr = NULL;
-                    }
-                    if (fd != -1) {
-                        close(fd);
-                        fd = -1;
-                    }
+                    size = VENUS_EXTRADATA_SIZE(4096, 2160);;
+                    buffer_count = 0;
+                    enable = OMX_FALSE;
                 }
 
                 ~client_extradata_info() {
-                    reset();
                 }
 
-                bool set_extradata_info(int fd, OMX_U32 total_size, OMX_U32 size) {
-                    reset();
-                    this->fd = fd;
+                bool set_extradata_info(OMX_U32 size, OMX_U32 buffer_count) {
                     this->size = size;
-                    this->total_size = total_size;
-                    vaddr = (OMX_U8*)mmap(0, total_size,
-                            PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-                    if (vaddr == MAP_FAILED) {
-                        vaddr = NULL;
-                        reset();
-                        return false;
-                    }
+                    this->buffer_count = buffer_count;
                     return true;
                 }
-
-                OMX_U8 *getBase() const {
-                    return (OMX_U8 *)vaddr;
+                void enable_client_extradata(OMX_BOOL enable) {
+                    this->enable = enable;
                 }
-
+                bool is_client_extradata_enabled() {
+                    return enable;
+                }
                 OMX_U32 getSize() const {
                     return size;
                 }
+                OMX_U32 getBufferCount() const {
+                    return buffer_count;
+                }
         };
-        client_extradata_info m_client_extradata_info;
+        client_extradata_info m_client_out_extradata_info;
+        bool m_buffer_error;
+
+        OMX_ERRORTYPE get_vendor_extension_config(
+                OMX_CONFIG_ANDROID_VENDOR_EXTENSIONTYPE *ext);
+        OMX_ERRORTYPE set_vendor_extension_config(
+                OMX_CONFIG_ANDROID_VENDOR_EXTENSIONTYPE *ext);
+
+        void init_vendor_extensions (VendorExtensionStore&);
+
+        // list of extensions is not mutable after initialization
+        const VendorExtensionStore mVendorExtensionStore;
+
+        // Map of ColorAspects (VideoAPI.h) to ColorMetaData (color_metadata.h)
+        PrimariesMap mPrimariesMap;
+        TransferMap mTransferMap;
+        MatrixCoeffMap mMatrixCoeffMap;
+        RangeMap mColorRangeMap;
+
+        void init_color_aspects_map();
+        void convert_color_aspects_to_metadata(ColorAspects& aspects, ColorMetaData &color_mdata);
+        void convert_hdr_info_to_metadata(HDRStaticInfo& hdr_info, ColorMetaData &color_mdata);
+        void get_preferred_color_aspects(ColorAspects& preferredColorAspects);
+        void get_preferred_hdr_info(HDRStaticInfo& preferredHDRInfo);
 };
 
 #ifdef _MSM8974_
@@ -1326,10 +1557,12 @@ enum instance_state {
     MSM_VIDC_CORE_UNINIT,
 };
 
+#ifndef _TARGET_KERNEL_VERSION_49_
 enum vidc_resposes_id {
     MSM_VIDC_DECODER_FLUSH_DONE = 0x11,
     MSM_VIDC_DECODER_EVENT_CHANGE,
 };
+#endif
 
 #endif // _MSM8974_
 

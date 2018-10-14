@@ -1,7 +1,7 @@
 /**
  * @copyright
  *
- *   Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+ *   Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions are met:
@@ -147,7 +147,7 @@ OMX_ERRORTYPE omx_swvdec::component_init(OMX_STRING cmp_name)
     {
         char property_value[PROPERTY_VALUE_MAX] = {0};
 
-        if (property_get("omx_swvdec.meta_buffer.disable",
+        if (property_get("vendor.omx_swvdec.meta_buffer.disable",
                          property_value,
                          NULL))
         {
@@ -191,6 +191,25 @@ OMX_ERRORTYPE omx_swvdec::component_init(OMX_STRING cmp_name)
         m_swvdec_codec         = SWVDEC_CODEC_H263;
         m_omx_video_codingtype = OMX_VIDEO_CodingH263;
     }
+#ifdef _ANDROID_O_MR1_DIVX_CHANGES
+   else if (!strncmp(cmp_name,"OMX.qti.video.decoder.divxsw",OMX_MAX_STRINGNAME_SIZE)){
+        OMX_SWVDEC_LOG_LOW("video_decoder.divx");
+
+        strlcpy(m_cmp_name,              cmp_name, OMX_MAX_STRINGNAME_SIZE);
+        strlcpy(m_role_name, "video_decoder.divx", OMX_MAX_STRINGNAME_SIZE);
+
+        m_swvdec_codec         = SWVDEC_CODEC_MPEG4;
+        m_omx_video_codingtype = ((OMX_VIDEO_CODINGTYPE) QOMX_VIDEO_CodingDivx);
+   }else if (!strncmp(cmp_name,"OMX.qti.video.decoder.divx4sw",OMX_MAX_STRINGNAME_SIZE)){
+         OMX_SWVDEC_LOG_LOW("video_decoder.divx4");
+
+        strlcpy(m_cmp_name,              cmp_name, OMX_MAX_STRINGNAME_SIZE);
+        strlcpy(m_role_name, "video_decoder.divx4", OMX_MAX_STRINGNAME_SIZE);
+
+        m_swvdec_codec         = SWVDEC_CODEC_MPEG4;
+        m_omx_video_codingtype = ((OMX_VIDEO_CODINGTYPE) QOMX_VIDEO_CodingDivx);
+   }
+#else
     else if (((!strncmp(cmp_name,
                         "OMX.qti.video.decoder.divxsw",
                         OMX_MAX_STRINGNAME_SIZE))) ||
@@ -206,6 +225,7 @@ OMX_ERRORTYPE omx_swvdec::component_init(OMX_STRING cmp_name)
         m_swvdec_codec         = SWVDEC_CODEC_MPEG4;
         m_omx_video_codingtype = ((OMX_VIDEO_CODINGTYPE) QOMX_VIDEO_CodingDivx);
     }
+#endif
     else
     {
         OMX_SWVDEC_LOG_ERROR("'%s': invalid component name", cmp_name);
@@ -386,7 +406,6 @@ OMX_ERRORTYPE omx_swvdec::get_component_version(OMX_HANDLETYPE   cmp_handle,
         p_spec_version->nVersion = OMX_SPEC_VERSION;
     }
 
-get_component_version_exit:
     return retval;
 }
 
@@ -742,9 +761,9 @@ OMX_ERRORTYPE omx_swvdec::get_parameter(OMX_HANDLETYPE cmp_handle,
 
             if (p_buffer_usage->nPortIndex == OMX_CORE_PORT_INDEX_OP)
             {
-                p_buffer_usage->nUsage = (GRALLOC_USAGE_PRIVATE_IOMMU_HEAP |
+                p_buffer_usage->nUsage = (static_cast<uint32_t>(GRALLOC_USAGE_PRIVATE_IOMMU_HEAP |
                                           GRALLOC_USAGE_SW_READ_OFTEN |
-                                          GRALLOC_USAGE_SW_WRITE_OFTEN);
+                                          GRALLOC_USAGE_SW_WRITE_OFTEN));
             }
             else
             {
@@ -2695,7 +2714,6 @@ OMX_ERRORTYPE omx_swvdec::set_adaptive_playback(unsigned int max_width,
         retval = set_frame_attributes(m_omx_color_formattype);
     }
 
-set_adaptive_playback_exit:
     return retval;
 }
 
@@ -2806,7 +2824,6 @@ OMX_ERRORTYPE omx_swvdec::set_video_port_format(
         retval = OMX_ErrorBadPortIndex;
     }
 
-set_video_port_format_exit:
     return retval;
 }
 
@@ -2839,14 +2856,23 @@ OMX_ERRORTYPE omx_swvdec::get_port_definition(
         p_port_def->bEnabled           = m_port_ip.enabled;
         p_port_def->bPopulated         = m_port_ip.populated;
 
+        // VTS uses input port dimensions to set OP dimensions
+        if ((retval = get_frame_dimensions_swvdec()) != OMX_ErrorNone)
+        {
+            goto get_port_definition_exit;
+        }
+
+        p_port_def->format.video.nFrameWidth  = m_frame_dimensions.width;
+        p_port_def->format.video.nFrameHeight = m_frame_dimensions.height;
+
         OMX_SWVDEC_LOG_HIGH("port index %d: "
-                            "count actual %d, count min %d, size %d",
+                            "count actual %d, count min %d, size %d, %d x %d",
                             p_port_def->nPortIndex,
                             p_port_def->nBufferCountActual,
                             p_port_def->nBufferCountMin,
-                            p_port_def->nBufferSize);
-
-        // frame dimensions & attributes don't apply to input port
+                            p_port_def->nBufferSize,
+                            p_port_def->format.video.nFrameWidth,
+                            p_port_def->format.video.nFrameHeight);
 
         p_port_def->format.video.eColorFormat       = OMX_COLOR_FormatUnused;
         p_port_def->format.video.eCompressionFormat = m_omx_video_codingtype;
@@ -4551,7 +4577,19 @@ OMX_ERRORTYPE omx_swvdec::flush(unsigned int port_index)
         {
             m_port_ip.flush_inprogress = OMX_TRUE;
 
-            // no separate SwVdec flush type for input
+            //for VTS test case IP flush , trigger flush all
+            // for IP flush, similar behavior is for hwcodecs
+            m_port_ip.flush_inprogress = OMX_TRUE;
+            m_port_op.flush_inprogress = OMX_TRUE;
+
+            swvdec_flush_type = SWVDEC_FLUSH_TYPE_ALL;
+
+            if ((retval_swvdec = swvdec_flush(m_swvdec_handle,
+                                              swvdec_flush_type)) !=
+                SWVDEC_STATUS_SUCCESS)
+            {
+                retval = retval_swvdec2omx(retval_swvdec);
+            }
         }
         else if (port_index == OMX_CORE_PORT_INDEX_OP)
         {
@@ -4850,42 +4888,39 @@ OMX_ERRORTYPE omx_swvdec::retval_swvdec2omx(SWVDEC_STATUS retval_swvdec)
 {
     OMX_ERRORTYPE retval_omx;
 
-    switch (retval_swvdec)
-    {
+    switch (retval_swvdec) {
+        case SWVDEC_STATUS_SUCCESS:
+            retval_omx = OMX_ErrorNone;
+            break;
 
-    SWVDEC_STATUS_SUCCESS:
-        retval_omx = OMX_ErrorNone;
-        break;
+        case SWVDEC_STATUS_FAILURE:
+            retval_omx = OMX_ErrorUndefined;
+            break;
 
-    SWVDEC_STATUS_FAILURE:
-        retval_omx = OMX_ErrorUndefined;
-        break;
+        case SWVDEC_STATUS_NULL_POINTER:
+        case SWVDEC_STATUS_INVALID_PARAMETERS:
+            retval_omx = OMX_ErrorBadParameter;
+            break;
 
-    SWVDEC_STATUS_NULL_POINTER:
-    SWVDEC_STATUS_INVALID_PARAMETERS:
-        retval_omx = OMX_ErrorBadParameter;
-        break;
+        case SWVDEC_STATUS_INVALID_STATE:
+            retval_omx = OMX_ErrorInvalidState;
+            break;
 
-    SWVDEC_STATUS_INVALID_STATE:
-        retval_omx = OMX_ErrorInvalidState;
-        break;
+        case SWVDEC_STATUS_INSUFFICIENT_RESOURCES:
+            retval_omx = OMX_ErrorInsufficientResources;
+            break;
 
-    SWVDEC_STATUS_INSUFFICIENT_RESOURCES:
-        retval_omx = OMX_ErrorInsufficientResources;
-        break;
+        case SWVDEC_STATUS_UNSUPPORTED:
+            retval_omx = OMX_ErrorUnsupportedSetting;
+            break;
 
-    SWVDEC_STATUS_UNSUPPORTED:
-        retval_omx = OMX_ErrorUnsupportedSetting;
-        break;
+        case SWVDEC_STATUS_NOT_IMPLEMENTED:
+            retval_omx = OMX_ErrorNotImplemented;
+            break;
 
-    SWVDEC_STATUS_NOT_IMPLEMENTED:
-        retval_omx = OMX_ErrorNotImplemented;
-        break;
-
-    default:
-        retval_omx = OMX_ErrorUndefined;
-        break;
-
+        default:
+            retval_omx = OMX_ErrorUndefined;
+            break;
     }
 
     return retval_omx;
@@ -5235,8 +5270,6 @@ OMX_ERRORTYPE omx_swvdec::async_process_event_cmd(OMX_COMMANDTYPE cmd,
     OMX_ERRORTYPE retval = OMX_ErrorNone;
 
     bool cmd_ack = false;
-
-    SWVDEC_STATUS retval_swvdec;
 
     switch (cmd)
     {
@@ -6165,7 +6198,6 @@ OMX_ERRORTYPE omx_swvdec::async_process_event_fbd(
         retval = OMX_ErrorBadParameter;
     }
 
-async_process_event_fbd_exit:
     return retval;
 }
 

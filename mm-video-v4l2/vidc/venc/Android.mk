@@ -24,13 +24,15 @@ libmm-venc-def += -D_MSM8974_
 TARGETS_THAT_USE_FLAG_MSM8226 := msm8226 msm8916 msm8909
 TARGETS_THAT_NEED_SW_VENC_MPEG4 := msm8909 msm8937
 TARGETS_THAT_NEED_SW_VENC_HEVC := msm8992
-TARGETS_THAT_SUPPORT_UBWC := msm8996 msm8998
-TARGETS_THAT_SUPPORT_VQZIP := msm8996 msm8998
-TARGETS_THAT_SUPPORT_PQ := msm8996 msm8998 sdm660 msm8953
+TARGETS_THAT_SUPPORT_UBWC := msm8996 msm8998 apq8098_latv
+TARGETS_THAT_SUPPORT_VQZIP := msm8996 msm8998 apq8098_latv
+TARGETS_THAT_SUPPORT_PQ := msm8996 msm8998 apq8098_latv msm8953 sdm660
 TARGETS_THAT_USE_NV21 := sdm660 msm8953
 TARGETS_THAT_SUPPORT_MAX_H264_LEVEL_4 := msm8937
 TARGETS_THAT_SUPPORT_MAX_H264_LEVEL_51 := msm8953 sdm660
-TARGETS_THAT_SUPPORT_MAX_H264_LEVEL_52 := msm8996 msm8998
+TARGETS_THAT_SUPPORT_MAX_H264_LEVEL_52 := msm8996 msm8998 apq8098_latv
+TARGETS_THAT_DONOT_SUPPORT_TEMPORAL_LAYER := msm8909 msm8937
+TARGETS_THAT_SUPPORT_LTR := msm8998 sdm660
 
 ifeq ($(TARGET_BOARD_PLATFORM),msm8610)
 libmm-venc-def += -DMAX_RES_720P
@@ -44,6 +46,10 @@ libmm-venc-def += -DMAX_RES_1080P_EBI
 endif
 endif
 
+ifeq ($(TARGET_KERNEL_VERSION), 4.9)
+libmm-venc-def += -D_TARGET_KERNEL_VERSION_49_
+endif
+
 ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_UBWC)),true)
 libmm-venc-def += -D_UBWC_
 endif
@@ -52,16 +58,24 @@ ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_USE_NV21)),true)
 libmm-venc-def += -D_NV21_
 endif
 
-#ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_VQZIP)),true)
-#libmm-venc-def += -D_VQZIP_
-#endif
+ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_VQZIP)),true)
+libmm-venc-def += -D_VQZIP_
+endif
 
-#ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_PQ)),true)
-#libmm-venc-def += -D_PQ_
-#endif
+ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_PQ)),true)
+libmm-venc-def += -D_PQ_
+endif
 
 ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_USE_FLAG_MSM8226)),true)
 libmm-venc-def += -D_MSM8226_
+endif
+
+ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_DONOT_SUPPORT_TEMPORAL_LAYER)),true)
+libmm-venc-def += -D_DISABLE_TEMPORAL_LAYER_
+endif
+
+ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_LTR)),true)
+libmm-venc-def += -DLTR_SUPPORT
 endif
 
 ifeq ($(TARGET_USES_ION),true)
@@ -82,6 +96,11 @@ endif
 
 libmm-venc-def += -DUSE_CAMERA_METABUFFER_UTILS
 
+# Hypervisor
+ifneq (,$(filter $(MACHINE), "8x96autogvmquin" "8x96autogvmred"))
+libmm-venc-def += -D_HYPERVISOR_
+endif
+
 # Common Includes
 libmm-venc-inc      := $(LOCAL_PATH)/inc
 libmm-venc-inc      += $(call project-path-for,qcom-media)/mm-video-v4l2/vidc/common/inc
@@ -89,11 +108,9 @@ libmm-venc-inc      += $(call project-path-for,qcom-media)/mm-core/inc
 libmm-venc-inc      += $(call project-path-for,qcom-media)/libstagefrighthw
 libmm-venc-inc      += $(TARGET_OUT_HEADERS)/qcom/display
 libmm-venc-inc      += $(TARGET_OUT_HEADERS)/adreno
-libmm-venc-inc      += frameworks/native/include/media/hardware
-libmm-venc-inc      += frameworks/native/include/media/openmax
 libmm-venc-inc      += $(call project-path-for,qcom-media)/libc2dcolorconvert
+libmm-venc-inc      += $(call project-path-for,qcom-media)/hypv-intercept
 libmm-venc-inc      += $(TARGET_OUT_HEADERS)/libvqzip
-libmm-venc-inc      += frameworks/av/include/media/stagefright
 libmm-venc-inc      += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_PQ)),true)
 libmm-venc-inc      += $(TARGET_OUT_HEADERS)/libgpustats
@@ -118,16 +135,26 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE                    := libOmxVenc
 LOCAL_MODULE_TAGS               := optional
+LOCAL_VENDOR_MODULE             := true
 LOCAL_CFLAGS                    := $(libmm-venc-def)
+
+LOCAL_HEADER_LIBRARIES := \
+        media_plugin_headers \
+        libnativebase_headers \
+        libcutils_headers \
+        libutils_headers \
+        libhardware_headers \
+
 LOCAL_C_INCLUDES                := $(libmm-venc-inc)
 LOCAL_ADDITIONAL_DEPENDENCIES   := $(libmm-venc-add-dep)
 
 LOCAL_PRELINK_MODULE      := false
-LOCAL_SHARED_LIBRARIES    := liblog libutils libbinder libcutils \
-                             libdl libgui
+LOCAL_SHARED_LIBRARIES    := liblog libcutils libdl
+
 ifeq ($(BOARD_USES_ADRENO), true)
 LOCAL_SHARED_LIBRARIES    += libc2dcolorconvert
 endif # ($(BOARD_USES_ADRENO), true)
+LOCAL_SHARED_LIBRARIES += libhypv_intercept
 LOCAL_SHARED_LIBRARIES += libqdMetaData
 LOCAL_STATIC_LIBRARIES    := libOmxVidcCommon
 
@@ -149,13 +176,20 @@ libmm-venc-inc      += $(TARGET_OUT_HEADERS)/mm-video/swvenc
 LOCAL_MODULE                    := libOmxSwVencMpeg4
 
 LOCAL_MODULE_TAGS               := optional
+LOCAL_VENDOR_MODULE             := true
 LOCAL_CFLAGS                    := $(libmm-venc-def)
+
+LOCAL_HEADER_LIBRARIES := \
+        media_plugin_headers \
+        libnativebase_headers \
+        libutils_headers \
+        libhardware_headers \
+
 LOCAL_C_INCLUDES                := $(libmm-venc-inc)
 LOCAL_ADDITIONAL_DEPENDENCIES   := $(libmm-venc-add-dep)
 
 LOCAL_PRELINK_MODULE      := false
-LOCAL_SHARED_LIBRARIES    := liblog libutils libbinder libcutils \
-                             libdl libgui
+LOCAL_SHARED_LIBRARIES    := liblog libcutils libdl
 LOCAL_SHARED_LIBRARIES    += libMpeg4SwEncoder
 ifeq ($(BOARD_USES_ADRENO), true)
 LOCAL_SHARED_LIBRARIES    += libc2dcolorconvert
